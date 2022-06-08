@@ -1,0 +1,34 @@
+The glossary about LoL terminologies is in the final project. 
+The glossary and part of the code book come from the data downloaded page on Kaggle.
+
+game_id: Unique RIOT ID of the game. Can be used with the Riot Games API.
+winner : the winner of each game. "red" indicate red team, and "blue" indicate blye team.
+first_blood: the team that first kill an enemy. "red" indicate red team, and "blue" indicate blye team.
+
+Note: All the following variables means the same but for red team if the variable prefix change to red(eg,red_deaths, red_total_gold)
+
+blue_kills: Number of enemies killed by the blue team
+blue_deaths: Number of deaths (blue team)
+blue_assists: Number of kill assists (blue team)
+blue_elite_monsters: Number of elite monsters killed by the blue team (Dragons and Heralds)
+blue_dragons: Number of dragons killed by the blue team
+blue_heralds: Number of heralds killed by the blue team
+blue_towers_destroyed: Number of structures destroyed by the blue team
+blue_total_gold: Blue team total gold
+blue_avg_level: Blue team average champion level
+blue_total_experience: Blue team total experience
+blue_total_minions_killed: Blue team total minions killed (CS)
+blue_total_jungle_minions_killed: Blue team total jungle monsters killed
+blue_gold_diff: Blue team gold difference compared to the enemy team
+blue_experience_diff: Blue team experience difference compared to the enemy team
+blue_cs_per_min: Blue team minions killed per minute
+blue_gold_per_min: Blue team gold per minute
+blue_kda: The kill/death ratio of blue team calculated by (blue_kills + blue_assists)/blue_deaths
+blue_vision_score: Number of warding totems placed by the blue team on the map plus number of enemy warding totems the blue team has destroyed
+
+
+
+Data Citation
+
+Yi Lan, Ma. (2020). League of Legends Diamond Ranked Games(10 min)[Data set].https://www.kaggle.com/datasets/bobbyscience/league-of-legends-diamond-ranked-games-10-min
+

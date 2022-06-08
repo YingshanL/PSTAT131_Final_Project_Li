@@ -1,0 +1,1183 @@
+---
+title: "Final Project"
+author: Yingshan Li(7937790)
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    code_folding: hide
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+The purpose of this project is to generate a model that will predict the
+winner of a League Of Legends game based on the players' first ten
+minutes of in-game performance.
+
+### Basic Information About League Of Legends
+
+League of Legends, also called LoL, is developed and published by Riot
+Games in 2009. It has been a very popular game since first published.
+
+League of Legends is a team-based strategy MOBA game where two teams, a
+blue team, and a red team, of five powerful champions(characters that
+have different abilities), face off to destroy the other's base. There
+are 3 lanes, a jungle, and 5 different roles for each team's players to
+choose from. Each player can choose from over 140 champions that are
+dedicated to different roles. In each game. Players kill enemies and
+minions, take jungle resources, and destroy towers as them battle their
+way to victory. All these actions and along with the time increase,
+players earn gold and experiences to level up and equip their champion,
+which makes their champion much stronger.
+
+LoL is also the world's largest E-sport as it has 12 sub leagues for
+different regions of the world such as LPL for China, LCK for Korea, and
+LEC for Europe. Professional teams in these leagues compete every year
+for getting and fighting into the League of Legends World Championship
+and the Mid-Season Invitational(MSI), which are the biggest worldwide
+LoL competitions each year.
+
+### Why Choose to Build This Model?
+
+I am a player of LoL, so I am interested in the topic related to
+players' performance and prediction results. Moreover, there is a winner
+prediction section pop up in the professional LoL competition at certain
+times of the game. The model could potentially be developed to make the
+winner prediction at the early stage of the game.
+
+### Loading Data and Packages
+
+The original data for this project comes from the RIOT API. The data
+record the first 10 mins of game statistics for both teams from nearly
+10,000 SOLO ranked games of high-level players, from Diamond to Master.
+It is very difficult to reach diamonds and even higher, all the players
+after level Diamonds have the roughly same level of skills, so their
+game skills will not significantly affect the result. Each observation
+in the data set comes from a unique game, identified by unique game IDs.
+I downloaded the data from Kaggle.
+
+The full copy of the codebook is available in the data folder. The
+prefix `blue` or `red` indicates the team of that data. The following
+Glossary comes from the data download page on Kaggle are some important
+professional LoL terminologies included in the variable names to be
+aware of for the following report:
+
+-   Warding totem: An item that a player can put on the map to reveal
+    the nearby area. Very useful for map/objectives control.
+
+-   Minions: NPC that belong to both teams. They give gold when killed
+    by players.
+
+-   Jungle minions: NPC that belong to NO TEAM. They give gold and buffs
+    when killed by players.
+
+-   Elite monsters: Monsters(Dragons and Heralds) with high hp/damage
+    that give a massive bonus (gold/XP/stats) when killed by a team.
+
+-   Dragons: Elite monster which gives team bonus when killed. The 4th
+    dragon killed by a team gives a massive stats bonus. The 5th dragon
+    (Elder Dragon) offers a huge advantage to the team.
+
+-   Herald: Elite monster which gives stats bonus when killed by the
+    player. It helps to push a lane and destroys structures.
+
+-   Towers: Structures you have to destroy to reach the enemy Nexus.
+    They give gold.
+
+-   Level: Champion level. Start at 1. Max is 18. Increase as
+    experiences(XP) increases.
+
+```{r, warning=FALSE, message=FALSE}
+# load packages
+library(dplyr)
+library(magrittr)
+library(tidyverse)
+library(tidymodels)
+library(ISLR)
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(klaR)
+tidymodels_prefer()
+library(ggplot2)
+library(corrplot)
+library(ggthemes)
+library(janitor)
+library(glmnet)
+library(parsnip)
+library(rpart.plot)
+library(randomForest)
+library(xgboost)
+library(ranger)
+library(vip)
+library(rpart)
+library(hablar)
+library(ggcorrplot)
+library(gridExtra)
+library(cowplot)
+library(hrbrthemes)
+library(scales)
+library(kknn)
+library(readr)
+library(filesstrings)
+```
+
+```{r}
+# read in data
+rank_original<- read.csv("data/unprocessed/unprocessed_diamonds_rank_10mins.csv")
+```
+
+## Data Cleaning and Processing
+
+The original data set is already tidy and very ready to use with no
+missing values.
+
+-   Check missing values:
+
+```{r}
+# check missing values
+sum(is.na(rank_original))
+```
+
+Cleaning and processing steps for data to be used in further data
+analysis:
+
+-   Clean names
+
+```{r}
+rank <- rank_original %>% 
+  clean_names()
+```
+
+-   Create a new variable `winner` and remove the variable `blue_wins`
+
+    The dataset originally recorded the game results by the variable
+    `blue_wins` with level 0 indicate red wins and level 1 indicate blue
+    wins. I will create a new categorical variable `winner` based on
+    `blue_wins` with levels "red" and "blue" to indicate the winner of
+    each game.
+
+-   Transform `winner` to factor. Causing an error when I try to build
+    model in the draft and forget to transform it into factor.
+
+```{r}
+rank <- rank %>% 
+  # create winner
+  mutate(winner = if_else(blue_wins == 0, "red", "blue")) %>% 
+  # remove column blue_wins
+  select(-blue_wins)
+
+# transform to factor
+rank <- rank %>% 
+  mutate(winner = factor(winner))
+```
+
+-   Calculate KDA for both teams and create variables `blue_kda` and
+    `red_kda`\
+    KDA = (kill + assists)/death. KDA measures the ratio of how many
+    enemies they have killed versus the times they have died. This is
+    the most widely used statistic in LoL to show a player's
+    performance. Here, we use team statistics to calculate the KDA for
+    both teams. There might be some arguments that adding assists might
+    inflate the KDA figure, but since the assists can illustrate whether
+    or not all the team members are involved in the game, so we still
+    want to use KDA. I will incorporate KDA in the model fitting process
+    as it is not just a simple linear relationship between variables and
+    is indeed an essential figure used to show performances in the
+    professional LoL league.
+
+-   Round the `blue_kda` and `red_kda` to 2 decimal place
+
+```{r}
+rank <- rank %>% 
+  # calculate and create blue kda
+  mutate(blue_kda= (blue_kills+blue_assists)/blue_deaths) %>% 
+  # calcuate and create red kda
+  mutate(red_kda = (red_kills+red_assists)/red_deaths) %>% 
+  # round to 2 digits
+  mutate(blue_kda = round(blue_kda,2)) %>% 
+  mutate(red_kda = round(red_kda,2))
+```
+
+-   Rationalize the data, change the inf value to NA
+
+    The formula of calculating the KDA cause a problem since there are
+    some circumstances that one side has 0 death in the first ten mins
+    of the game. This causes `blue_kda` and `red_kda` contain data that
+    is an infinite number, which is not usable in further analysis.
+    Interestingly, for most of the time, when one side get an inf KDA,
+    the other team has 0 KDA, which means that one side has
+    significantly better performance than the other side. LoL has a very
+    complex evaluation process that calculates a player's kda if there
+    is no death. For simplicity and interpretability at the same time,
+    we will use the mean kill+assists figure from the data that
+    `death = 0` to approximate the KDA for each side in this situation.
+    Such a figure can also reflect a player's performance as it shows
+    how many kills the player has involved.
+
+```{r}
+# rationalize inf values
+rank <- rank %>% 
+  rationalize() 
+```
+
+-   Calculate approximate KDA if `death`== 0
+
+```{r}
+# calculate approximate blue kda
+blue_approx_kda <-rank %>% 
+  filter(blue_deaths == 0) %>%
+  select(blue_kills,blue_assists) %>% 
+  summarise(mean(blue_kills) + mean(blue_assists))
+
+# round it to 2 digits
+round(blue_approx_kda,2)
+
+# calculate approximate red kda
+red_approx_kda <- rank %>% 
+  filter(red_deaths == 0) %>%
+  select(red_kills,red_assists) %>% 
+  summarise(mean(red_kills) + mean(red_assists))
+
+# round it to 2 digits
+round(red_approx_kda,2)
+```
+
+-   Fill in NA by approximate KDA
+
+```{r}
+# fill in blue kda
+rank <- rank %>% 
+  dplyr::mutate(blue_kda = replace_na(blue_kda, 12.03))
+# fill in red kda
+rank <- rank %>% 
+  dplyr::mutate(red_kda = replace_na(red_kda,12.65))
+```
+
+-   Calculate vision score and create variables `blue_vision_score` and
+    `red_vision_score`
+
+    Vision score synthesize the variables about warding totem. Since
+    wards placed can light the map and provide important vision, LoL
+    game calculates the vision score based on the ward placed, ward
+    destroyed, ward duration and any other thing that trigger more
+    vision. Since we only got limited record on the ward, and the ward
+    has strictly positively relationship with the vision score, I decide
+    to compute the vision score by adding the wards_placed and the
+    wards_destroyed for each team, which shows the number of actions
+    that each team has undertaken to occupy more map vision.
+
+```{r}
+# create blue vision socre
+rank <- rank %>%
+  mutate(blue_vision_score = blue_wards_placed + blue_wards_destroyed)
+
+# create red vision score
+rank <- rank %>%
+  mutate(red_vision_score = red_wards_placed + red_wards_destroyed)
+```
+
+-   Remove variable `wards_placed` and `wards_destroyed` for both team
+
+```{r}
+rank <- rank %>%
+  # remove blue wards variables
+  select(-blue_wards_destroyed) %>% 
+  select(-blue_wards_placed) %>% 
+  # remove red wards variables
+  select(-red_wards_destroyed) %>% 
+  select(-red_wards_placed)
+```
+
+-   Compute new variable `first_blood` based on `red_first_blood` and
+    `blue_first_blood`
+
+    `red_first_blood` and `blue_first_blood` originally use level 0 or 1
+    to indicate whether the particular team has taken the first blood.
+    We will synthesize the information and create a new column
+    `first_blood` to clearly indicate which team has taken the first
+    blood.
+
+-   Remove columns `red_first_blood` and `blue_first_blood`
+
+-   Transform `first_blood` to factor
+
+```{r, warning=FALSE, message=FALSE}
+rank <- rank %>% 
+  # add first_blood column
+  mutate(first_blood = if_else(blue_first_blood == 0, "red", "blue"))
+
+# remove column blue_first_blood and red_first_blood
+rank <- rank %>% 
+  select(-blue_first_blood) %>% 
+  select(-red_first_blood)
+
+# change it to  factor
+rank <- rank %>% 
+  mutate(first_blood = factor(first_blood))
+
+# save the processed data and move it to data folder
+write_csv(rank, file = "processed_data.csv")
+file.move("processed_data.csv","data/processed/processed_data.csv")
+  
+```
+
+## Exploratory Data Analysis
+
+The exploratory data analysis based on the entire data set, a total of
+9879 observations.
+
+### Distribution of Outcome Variable - winner
+
+First to check whether or not the total of 9879 games recorded in our
+data set contains approximately the same number of games that the blue
+team wins or the red team wins.
+
+```{r}
+rank %>% 
+  ggplot(aes(x = winner, fill = winner)) +
+  geom_bar() +
+  scale_fill_manual(values =  c("#00BFC4", "#F8766D") )
+```
+
+From the graph, we can observe that the number of games that the blue
+team wins is about the same as the number of games that the red team
+wins, so the data is very balanced for our further investigation.
+
+### Correlations
+
+Let us examine the correlations among important quantitative features
+for the blue and the red team separately:
+
+```{r, fig.width= 15, fig.height= 11}
+rcor <- rank %>% 
+  select(red_kda,red_dragons,red_heralds,red_towers_destroyed,red_total_gold,red_avg_level,red_total_minions_killed,red_total_jungle_minions_killed) %>% 
+  cor()
+
+red_corr <- ggcorrplot(rcor, hc.order = TRUE, type = "lower",
+                       outline.color = "black",
+                       colors = c("#d8b365","white", "#de2d26"), lab = TRUE)
+
+
+bcor <- rank %>% 
+  select(blue_kda,blue_dragons,blue_heralds,blue_towers_destroyed,blue_total_gold,blue_avg_level,blue_total_minions_killed,blue_total_jungle_minions_killed) %>% 
+  cor()
+
+blue_corr <- ggcorrplot(bcor, hc.order = TRUE, type = "lower",
+                        outline.color = "black",
+                        colors = c("#d8b365","white", "#2c7fb8"), lab = TRUE)
+
+
+plot_grid(red_corr,blue_corr)
+```
+
+From the plot, there are no unexpected correlations among the variable.
+We can see that there are positive correlations between gold and all
+other performance statistics or average level and all other performance
+statistics such as KDA, minions_killed, or tower destroyed. This
+corresponds to game mechanics that as the performance of the player gets
+better, the player can get more bonuses for gold and experiences, which
+are important criteria to build up determinant advantages in the game.
+
+### Gold&Exp vs Winner
+
+I want to examine the distribution of gold and experiences by the
+winner. The plot uses the difference between gold and experiences
+between two teams. The differences are calculated using the blue figure
+minus the red figure.
+
+```{r, width = 10}
+gold_diff_plot <-rank %>% 
+  select(blue_gold_diff,winner) %>% 
+  ggplot(aes(x=blue_gold_diff, y = winner, fill=winner)) +
+  geom_boxplot() +
+  scale_fill_manual(values =  c("#00BFC4", "#F8766D")) +
+  theme_bw()+ 
+  ggtitle("Gold difference(blue-red) vs Winner") +
+  labs(x="gold_diff", y = "winner")
+
+experience_diff_plot<- rank %>% 
+  select(blue_experience_diff,winner) %>% 
+  ggplot(aes(x=blue_experience_diff, y = winner, fill=winner)) +
+  geom_boxplot() +
+  scale_fill_manual(values =  c("#00BFC4", "#F8766D")) +
+  theme_bw()+ 
+  ggtitle("Experience Difference(blue-red) vs Winner") +
+  labs(x="experience_diff", y = "winner")
+
+grid.arrange(gold_diff_plot,experience_diff_plot)
+```
+
+In general, we can see that the winning team has a lead in gold and
+experience than the other team at the early stage of the game. However,
+we can see that leading in the gold and experiences can not garantee you
+win the game.
+
+### KDA vs Winner
+
+Since killing the enemy champions is considered the most valuable
+performance in the world of LoL, KDA becomes the most important
+statistic in the League of Legends to choose MVP and evaluate each
+person's performance. I hypothesize that KDA is one of the most
+determinant figure. Let's see the distribution of KDA by the winner
+separately for two teams:
+
+```{r}
+blue_kda_plot<- rank %>% 
+  select(blue_kda,winner) %>% 
+  ggplot(aes(x=blue_kda, y = winner, fill=winner)) +
+  geom_boxplot() +
+  scale_fill_manual(values =  c("#00BFC4", "#F8766D")) +
+  theme_bw()+ 
+  ggtitle("Blue KDA vs Winner") +
+  labs(x="blue_kda", y = "winner")
+
+red_kda_plot <- rank %>% 
+  select(red_kda,winner) %>% 
+  ggplot(aes(x=red_kda, y = winner, fill=winner)) +
+  geom_boxplot() +
+  scale_fill_manual(values =  c("#00BFC4", "#F8766D")) +
+  theme_bw()+ 
+  ggtitle("Red KDA vs Winner") +
+  labs(x="red_kda", y = "winner")
+
+grid.arrange(blue_kda_plot,red_kda_plot)
+```
+
+We can see obviously that the team has a higher mean KDA in the first
+ten mins of the game when it wins the game. Still, the large potential
+variations and short time of game might cause such outliers in the plot.
+
+### Public Jungle Resources vs Win Rate
+
+Elite Monsters in LoL are public jungle resources that two sides compete
+for. Dragons and Heralds are elite monsters that will be born in the
+game for the first ten minutes, and there will be only one dragon and
+one herald in the first ten minutes of the game. Let's first examine the
+win rate of taken elite monster and the win rate of taken both elite
+monsters, dragon and herald:
+
+```{r}
+EM_blue_win <-rank %>% 
+  filter(blue_elite_monsters >= 1 & winner == "blue")
+EM_red_win <- rank %>% 
+  filter(red_elite_monsters >= 1 & winner == "red")
+game_win_EM <- nrow(EM_blue_win) + nrow(EM_red_win)
+EM_killed <- rank %>% 
+  filter(blue_elite_monsters >= 1 | red_elite_monsters >= 1)
+game_loss_EM<-nrow(EM_killed)-game_win_EM
+game_EM_killed <- nrow(EM_killed)
+
+data_EM <- data.frame(
+  result = c("win", "loss"),
+  value = c(game_win_EM, game_loss_EM),
+  perc = c(game_win_EM/game_EM_killed, game_loss_EM/game_EM_killed)
+)
+
+df_EM <- data_EM %>% 
+  mutate(labels = scales::percent(perc))
+
+EM_plot <- ggplot(df_EM, aes(x="",y = perc, fill = result)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  geom_text(aes(label = labels), position = position_stack(vjust = 0.5),color = "white",size = 6) +
+  ggtitle("Elite Monsters vs Win rate")
+
+both_blue_win <-rank %>% 
+  filter(blue_heralds >= 1 & blue_dragons >= 1 & winner == "blue")
+both_red_win <- rank %>% 
+  filter(red_heralds >= 1 & red_dragons >= 1 & winner == "red")
+game_win_both<- nrow(both_blue_win) + nrow(both_red_win)
+blue_both_killed <- rank %>% 
+  filter(blue_heralds >= 1 & blue_dragons >= 1)
+red_both_killed <- rank %>% 
+  filter(red_heralds >= 1 & red_dragons >= 1)
+game_both_killed <- nrow(blue_both_killed) + nrow(red_both_killed)
+game_loss_both<-game_both_killed- game_win_both
+
+data_both <- data.frame(
+  result = c("win", "loss"),
+  value = c(game_win_both,game_loss_both),
+  perc = c(game_win_both/game_both_killed, game_loss_both/game_both_killed)
+)
+
+df_both <- data_both %>% 
+  mutate(labels = scales::percent(perc))
+
+both_plot <- ggplot(df_both, aes(x="",y = perc, fill = result)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  geom_text(aes(label = labels), position = position_stack(vjust = 0.5),color = "white",size = 6) +
+  ggtitle("Both killed vs Win rate")
+
+plot_grid(EM_plot, both_plot)
+```
+
+From the plot, we can observe that getting both elite monsters in the
+early stage can not significantly increase the win rate. Approximately
+71% of the team who has got at least one elite monster wins the game,
+which indicates that getting the elite monsters can increase the chance
+of winning the game.
+
+Now, let's examine the win rate for taken dragon and heralds separately:
+
+```{r}
+dragons_blue_win <-rank %>% 
+  filter(blue_dragons >= 1 & winner == "blue")
+dragons_red_win <- rank %>% 
+  filter(red_dragons >= 1 & winner == "red")
+game_win_dragon <- nrow(dragons_blue_win) + nrow(dragons_red_win)
+dragon_killed <- rank %>% 
+  filter(blue_dragons >= 1 | red_dragons >= 1)
+game_loss_dragon<-nrow(dragon_killed)-game_win_dragon
+game_dragon_killed <- nrow(dragon_killed)
+
+data_dragon <- data.frame(
+  result = c("win", "loss"),
+  value = c(game_win_dragon, game_loss_dragon),
+  perc = c(game_win_dragon/game_dragon_killed, game_loss_dragon/game_dragon_killed)
+)
+
+df <- data_dragon %>% 
+  mutate(labels = scales::percent(perc))
+
+dragon_plot<- ggplot(df, aes(x="",y = perc, fill = result)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  geom_text(aes(label = labels), position = position_stack(vjust = 0.5),color = "white",size = 6) +
+  ggtitle("Dragon vs Win rate")
+
+herald_blue_win <-rank %>% 
+  filter(blue_heralds >= 1 & winner == "blue")
+herald_red_win <- rank %>% 
+  filter(red_heralds >= 1 & winner == "red")
+game_win_herald <- nrow(herald_blue_win) + nrow(herald_red_win)
+herald_killed <- rank %>% 
+  filter(blue_heralds >= 1 | red_heralds >= 1)
+game_loss_herald<-nrow(herald_killed)-game_win_herald
+game_herald_killed <- nrow(herald_killed)
+
+data_herald <- data.frame(
+  result = c("win", "loss"),
+  value = c(game_win_herald, game_loss_herald),
+  perc = c(game_win_herald/game_herald_killed, game_loss_herald/game_herald_killed)
+)
+
+df_herald <- data_herald %>% 
+  mutate(labels = scales::percent(perc))
+
+herald_plot <- ggplot(df_herald, aes(x="",y = perc, fill = result)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  geom_text(aes(label = labels), position = position_stack(vjust = 0.5),color = "white",size = 6) +
+  ggtitle("Herald vs Win rate")
+plot_grid(dragon_plot,herald_plot)
+
+```
+
+Based on the plot, we observe that taking the first dragon contributes
+more to the win rate than taking the first herald in the early stage of
+the game.
+
+## Data Split
+
+The data was split into 70% training set and 30% testing set. The
+stratified sampling is used, and the strata is the outcome variable
+`winner` . I also use stratified k-fold cross-validation with k = 5 on
+the training set.
+
+```{r}
+# set seed
+set.seed(3435)
+rank_split <- rank %>% 
+  initial_split(strata = winner, prop = 0.7)
+rank_train <- training(rank_split)
+rank_test <- testing(rank_split)
+
+#check for correct number of observations in train and test data set
+dim(rank_train)
+dim(rank_test)
+
+rank_folds <- vfold_cv(rank_train, strata = winner, v = 5)
+```
+
+The training data set has 6915 observations and the testing data has
+2964 observations.
+
+## Model Building
+
+### Create the recipe
+
+I will predict the winner with all predictors except the game_id that
+identifies each unique game in the data set.
+
+```{r}
+rank_recipe <- recipe(winner ~ blue_kills + blue_deaths + blue_assists + blue_elite_monsters
+                      + blue_dragons + blue_heralds +blue_towers_destroyed + blue_total_gold 
+                      + blue_avg_level + blue_total_experience + blue_total_minions_killed
+                      + blue_total_jungle_minions_killed + blue_gold_diff + blue_experience_diff 
+                      + blue_cs_per_min + blue_gold_per_min + red_kills + red_deaths + red_assists 
+                      + red_elite_monsters + red_dragons + red_heralds +red_towers_destroyed 
+                      + red_total_gold + red_avg_level + red_total_experience +red_total_minions_killed
+                      + red_total_jungle_minions_killed +red_gold_diff + red_experience_diff 
+                      + red_cs_per_min + red_gold_per_min + blue_kda + red_kda + blue_vision_score 
+                      + red_vision_score + first_blood, data = rank_train) %>%
+  # dummy code nomial predictor first_blood
+  step_dummy(first_blood) %>% 
+  # center and scale all predictors
+  step_normalize(all_predictors())
+```
+
+### Preparing and Running Models
+
+The response variable `winner` is a categorical variable that contains
+two levels, so I choose to run the following models that could deal with
+the classification problem.
+
+#### Lasso regression
+
+To prepare, I first created the specification for lasso regression, set
+`mixture = 1` to indicate lasso regression, used `glmnet` engine, and
+chose to tune the parameter `penalty` . After this, I set up the
+workflow that added the model specification and my recipe.
+
+```{r}
+lasso_spec <- 
+  logistic_reg(penalty = tune(), mixture = 1) %>%
+  set_mode("classification") %>% 
+  set_engine("glmnet")
+
+
+lasso_workflow <- workflow() %>% 
+  add_recipe(rank_recipe) %>% 
+  add_model(lasso_spec)
+```
+
+Then, I set up the tuning grid for penalty. The range for penalty comes
+from the lab, and it turns out to give a good result for my model.
+
+```{r}
+# set up grid
+penalty_grid <- grid_regular(penalty(range = c(-2, 2)), levels = 10)
+```
+
+Then, I ran the model by tuning and fitting, and saved the model result
+so that I don't need to re-run the model.
+
+```{r, eval=FALSE}
+tune_res <- tune_grid(lasso_workflow,
+                      resamples = rank_folds,
+                      grid = penalty_grid)
+
+
+# save model in a rds
+write_rds(tune_res,"model_results/lasso_model.rds")
+```
+
+#### Random Forest
+
+For random forest specification, I set up the parameter `mtry` and
+`trees` to be tuned. I used the `ranger` engine for this model. Similar
+to the previous model, I created a workflow and added the model
+specification and recipe.
+
+```{r}
+rf_spec <- rand_forest(mtry = tune(), trees = tune(), min_n = 50) %>% 
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("classification")
+
+rf_workflow <- workflow() %>% 
+  add_model(rf_spec) %>% 
+  add_recipe(rank_recipe)
+```
+
+Then, I set up the tuning grid. The range of `mtry` is a little bit less
+than the number of variables, and the range for trees are not set very
+high to avoid the problem of overfitting.
+
+```{r}
+rf_grid <- grid_regular(mtry(range = c(2,30)), trees(range = c(100,1000)), levels = 10)
+```
+
+Then, I ran the model by tuning and fitting, and saved the model result
+so that I don't need to re-run the model.
+
+```{r, eval=FALSE}
+tune_rf <- tune_grid(
+  rf_workflow,
+  resamples = rank_folds,
+  grid = rf_grid)
+
+
+# save model result
+write_rds(tune_rf, "model_results/random_forest_model.rds")
+```
+
+#### Boosted Trees
+
+I chose to tune the parameter `trees` and `tree_depth` for boosted tree
+model, and used the engine `xgboost`. Next, I created the boosted tree
+workflow and added the model specification and recipe.
+
+```{r}
+boost_spec <- boost_tree(trees = tune(), 
+                         tree_depth = tune()
+                         ) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+boost_workflow <- workflow() %>% 
+  add_model(boost_spec) %>% 
+  add_recipe(rank_recipe)
+```
+
+Then, I set up the tuning grid. The range here are not set very high to
+avoid the problem of overfitting.
+
+```{r}
+bt_grid <- grid_regular(trees(range = c(10,2000)), tree_depth(range = c(1,50)), levels = 10)
+```
+
+Then, I ran the model by tuning and fitting, and saved the model result
+so that I don't need to re-run the model.
+
+```{r, eval=FALSE}
+tune_bt <- tune_grid(
+  boost_workflow,
+  resamples = rank_folds,
+  grid = bt_grid
+  )
+ 
+# save model result
+ write_rds(tune_bt, "model_results/boost_tree_model.rds")
+```
+
+#### K-Nearest Neighbors
+
+Lastly, I chose to tune the parameter `neighbors` and used the engine
+`kknn` in KNN model specification. Then, I created the workflow and
+added the model specification and recipe.
+
+```{r}
+knn_spec <- nearest_neighbor(neighbors = tune()) %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+
+knn_workflow <- workflow() %>% 
+  add_model(knn_spec) %>% 
+  add_recipe(rank_recipe)
+```
+
+Then, I set up the tuning grid. The range for neighbors is determined
+after trying various ranges.
+
+```{r}
+knn_grid <- grid_regular(neighbors(range = c(1,200)), levels = 10)
+```
+
+Finally, I ran this model by tuning and fitting, and saved the model
+result.
+
+```{r, eval=FALSE}
+tune_knn <- tune_grid(
+  knn_workflow,
+  resamples = rank_folds,
+  grid = knn_grid)
+
+# save model result
+write_rds(tune_knn, "model_results/knn_model.rds")
+```
+
+### Analysis of Models
+
+Let's now examine all the models that we have fitted. Since I want to
+choose a model that can predict the winner of the game accurately, I
+will compare different models by accuracy, and choose the best model
+that give the highest accuracy.
+
+#### Lasso Regression
+
+```{r}
+# load model result
+lasso_result <- read_rds("model_results/lasso_model.rds")
+autoplot(lasso_result)
+```
+
+From the plot, the accuracy decrease sharply after a certain value of
+penalty.
+
+```{r}
+# show the best model
+show_best(lasso_result, metric = "accuracy")
+
+# store the highest accuracy for this kind of model
+lasso_acc <- show_best(lasso_result, metric = "accuracy") %>% 
+  filter(row_number()==1)
+```
+
+The highest accuracy given by lasso regression is about 0.7384 with
+`penalty = 0.01`.
+
+#### Random Forest
+
+```{r}
+# load model result
+rf_result <- read_rds("model_results/random_forest_model.rds")
+autoplot(rf_result)
+```
+
+The accuracy is slightly higher for smaller number of trees and lower
+number of randomly selected predictors.
+
+```{r}
+# show the best model
+show_best(rf_result, metric = "accuracy")
+
+# store the highest accuracy for this kind of model
+rf_acc <- show_best(rf_result, metric = "accuracy") %>% 
+  filter(row_number()==1)
+```
+
+The highest accuracy given by random forest is about 0.7369 with
+`mtry = 5` and `trees = 300`.
+
+#### Boosted Tree
+
+```{r}
+# load model result
+bt_result <- read_rds("model_results/boost_tree_model.rds")
+autoplot(bt_result)
+```
+
+The model performs better when both the tree depth and the number of
+trees are smaller.
+
+```{r}
+# show the best model
+show_best(bt_result, metric = "accuracy")
+
+# store the highest accuracy for this kind of model
+bt_acc <- show_best(bt_result, metric = "accuracy") %>% 
+  filter(row_number() == 1)
+```
+
+The highest accuracy given by boosted tree is about 0.7397 with
+`trees = 231` and `tree_depth = 1`.
+
+#### Nearest Neighbor Model
+
+```{r}
+# load model result
+knn_result <- read_rds("model_results/knn_model.rds")
+autoplot(knn_result)
+```
+
+The accuracy increases significantly when we increase the number of
+nearest neighbors to around 25, and then the accuracy doesn't have any
+obvious movement as we continue to increase the number of nearest
+neighbors.
+
+```{r}
+# show the best model
+show_best(knn_result, metric = "accuracy")
+
+# store the highest accuracy for this kind of model
+knn_acc <- show_best(knn_result, metric = "accuracy") %>% 
+  filter(row_number() == 1)
+```
+
+The highest accuracy given by KNN is about 0.7313 with
+`neighbors = 231`.
+
+Synthesizing the accuracy for each kind of the model, we found that the
+boosted tree model gives the highest accuracy, so we will choose boosted
+tree as out best performance model.
+
+```{r}
+accuracy <- c(lasso_acc$mean,rf_acc$mean,bt_acc$mean,knn_acc$mean)
+models <- c("Lasso Regression", "Random Forest", "Boosted Tree", "KNN")
+results <- tibble(accuracy = accuracy, models =  models)
+results %>% 
+  arrange(-accuracy)
+```
+
+### Final Model Fitting 
+
+Let's fit the best boosted tree model on the entire training set:
+
+```{r}
+# select the best boosted tree model that give highest accuracy
+best_model <- select_best(bt_result, metric = "accuracy")
+
+# finalize the workflow by taking parameters from the best model
+bt_final_wkflow <- finalize_workflow(boost_workflow, best_model)
+
+# fit the model
+bt_final_fit <- fit(bt_final_wkflow, data = rank_train)
+```
+
+### Analysis Performance on Test set
+
+Let's fit the final model on the test set and see the prediction
+accuracy:
+
+```{r}
+augment(bt_final_fit, new_data = rank_test) %>% 
+  accuracy(truth=winner, estimate =  .pred_class)
+```
+
+The model returned an accuracy of 0.7105 on the testing data, which is
+only slightly lower than the accuracy on training data.
+
+Let's see the confusion matrix:
+
+```{r}
+augment(bt_final_fit, new_data = rank_test) %>% 
+  conf_mat(winner, .pred_class) %>% 
+  autoplot(type = "heatmap")
+```
+
+#### Check A Few Predictions
+
+To examine the model accuracy in practice, I have randomly chosen some
+games and used the first ten mins' statistics to see the model's
+prediction result.
+
+-   Game 1
+
+    This is a game randomly selected from the data set.
+
+```{r}
+game1 <- rank %>% 
+  filter(game_id == 4450484115) %>% 
+  select(-game_id)
+
+predict(bt_final_fit, game1)
+
+rank %>% 
+  filter(game_id == 4450484115) %>% 
+  select(winner)
+#correct
+```
+
+The model correctly predict the winner of this game.
+
+-   Game 2
+
+    This is the game from the professional LoL competition, which is the
+    first game of the Final of MSI 2022 between the team RNG and T1. RNG
+    is the blue side, and T1 is the red side. I record the relevant data
+    by myself when I watch the competition. I can not see each team's
+    total experiences from the game panel that was displayed when
+    recording the match, so I calculated the mean total experiences from
+    our data set that has the same average level.
+
+```{r}
+# approximate total_experience
+rank %>% 
+  filter(blue_avg_level == 7) %>% 
+  summarise(mean(blue_total_experience))
+rank %>% 
+  filter(red_avg_level == 7.4) %>% 
+  summarise(mean(red_total_experience))
+
+game2 <- data.frame(blue_kills = 2,
+                    blue_deaths = 0,
+                    blue_assists = 4,
+                    blue_elite_monsters = 1,
+                    blue_dragons = 0,
+                    blue_heralds = 1,
+                    blue_towers_destroyed = 0,
+                    blue_total_gold = 15800,
+                    blue_avg_level = 7,
+                    blue_total_experience = 18233,
+                    blue_total_minions_killed = 261,
+                    blue_total_jungle_minions_killed = 67,
+                    blue_gold_diff = -1000,
+                    blue_experience_diff = -1409,
+                    blue_cs_per_min = 26.1,
+                    blue_gold_per_min = 1580,
+                    red_kills = 0,
+                    red_deaths = 2,
+                    red_assists = 0,
+                    red_elite_monsters = 0,
+                    red_dragons = 0,
+                    red_heralds = 0,
+                    red_towers_destroyed = 0,
+                    red_total_gold = 16800,
+                    red_avg_level = 7.4,
+                    red_total_experience = 19642,
+                    red_total_minions_killed = 296,
+                    red_total_jungle_minions_killed = 78,
+                    red_gold_diff = 1000,
+                    red_experience_diff = 1409,
+                    red_cs_per_min = 29.6,
+                    red_gold_per_min = 1680,
+                    blue_kda = 2,
+                    red_kda = 0,
+                    blue_vision_score = 30,
+                    red_vision_score = 25,
+                    first_blood = "blue") %>% 
+  mutate(first_blood = factor(first_blood))
+
+predict(bt_final_fit, game2)
+#wrong            
+```
+
+Our model didn't correctly predict the winner this time. The blue side
+RNG wins this game instead.
+
+-   Game 3
+
+    This is the second game of the Finals of MSI 2022 between the team
+    RNG and T1. In this game, T1 is the blue side and the RNG is the red
+    side. The data is recorded and approximated in the same way.
+
+```{r}
+# approximate total_experience
+rank %>% 
+  filter(red_avg_level == 7.2) %>% 
+  summarise(mean(red_total_experience))
+
+game3 <- data.frame(blue_kills = 3,
+                    blue_deaths = 1,
+                    blue_assists = 1,
+                    blue_elite_monsters = 1,
+                    blue_dragons = 0,
+                    blue_heralds = 1,
+                    blue_towers_destroyed = 0,
+                    blue_total_gold = 16400,
+                    blue_avg_level = 7,
+                    blue_total_experience = 18233,
+                    blue_total_minions_killed = 274,
+                    blue_total_jungle_minions_killed = 61,
+                    blue_gold_diff = 700,
+                    blue_experience_diff = -700,
+                    blue_cs_per_min = 27.4,
+                    blue_gold_per_min = 1640,
+                    red_kills = 1,
+                    red_deaths = 3,
+                    red_assists = 1,
+                    red_elite_monsters = 1,
+                    red_dragons = 1,
+                    red_heralds = 0,
+                    red_towers_destroyed = 0,
+                    red_total_gold = 15700,
+                    red_avg_level = 7.2,
+                    red_total_experience = 18933,
+                    red_total_minions_killed = 254,
+                    red_total_jungle_minions_killed = 75,
+                    red_gold_diff = -700,
+                    red_experience_diff = 700,
+                    red_cs_per_min = 25.4,
+                    red_gold_per_min = 1570,
+                    blue_kda = 4,
+                    red_kda = 0.67,
+                    blue_vision_score = 27,
+                    red_vision_score = 35,
+                    first_blood = "red") %>% 
+  mutate(first_blood = factor(first_blood))
+
+predict(bt_final_fit, game3) #correct
+```
+
+Our model correctly predict the winner of this game. The Blue side T1
+indeed wins this game.
+
+-   Game 4
+
+    This is the fifth game of the Finals of MSI 2022 between the team
+    RNG and T1. In this game, RNG is the blue side and the T1 is the red
+    side. The data is recorded and approximated in the same way.
+
+```{r}
+# approximate total_experience
+rank %>% 
+  filter(red_avg_level == 6.8) %>% 
+  summarise(mean(red_total_experience))
+
+game4 <- data.frame(blue_kills = 4,
+                    blue_deaths = 1,
+                    blue_assists = 5,
+                    blue_elite_monsters = 2,
+                    blue_dragons = 1,
+                    blue_heralds = 1,
+                    blue_towers_destroyed = 0,
+                    blue_total_gold = 16000,
+                    blue_avg_level = 7,
+                    blue_total_experience = 18233,
+                    blue_total_minions_killed = 247,
+                    blue_total_jungle_minions_killed = 57,
+                    blue_gold_diff = 1500,
+                    blue_experience_diff = 695,
+                    blue_cs_per_min = 24.7,
+                    blue_gold_per_min = 1600,
+                    red_kills = 1,
+                    red_deaths = 4,
+                    red_assists = 1,
+                    red_elite_monsters = 0,
+                    red_dragons = 0,
+                    red_heralds = 0,
+                    red_towers_destroyed = 0,
+                    red_total_gold = 14500,
+                    red_avg_level = 6.8,
+                    red_total_experience = 17538,
+                    red_total_minions_killed = 246,
+                    red_total_jungle_minions_killed = 60,
+                    red_gold_diff = -1500,
+                    red_experience_diff = -695,
+                    red_cs_per_min = 24.6,
+                    red_gold_per_min = 1450,
+                    blue_kda = 9,
+                    red_kda = 0.5,
+                    blue_vision_score = 30,
+                    red_vision_score = 29,
+                    first_blood = "blue") %>% 
+  mutate(first_blood = factor(first_blood))
+
+predict(bt_final_fit, game4) #correct 
+```
+
+Our model also correctly predict the winner of this game.
+
+## Conclusion
+
+For all the model types, there are no significant differences in the
+accuracy of all the models. The boosted tree just has slightly higher
+accuracy than other models. The accuracy rate of just above 70% is just
+acceptable, but it has a higher potential to improve the prediction
+accuracy. From my point of view, our prediction accuracy is restricted
+by the limitation of data. Many other essential features could be
+incorporated into the analysis such as the champions that each player
+has chosen, interactions between champions, and game duration. Only the
+first ten minutes of players' performances may also not be sufficient to
+accurately predict the winner of the game. Moreover, the model is
+trained using the solo rank data, the model built from such data might
+hard to generalize to predict the winner of professional LoL
+competitions because there are many differences between the normal rank
+game and professional competition. For example, we aren't able to
+incorporate the player's statistics into the model building process for
+solo rank data; whereas, we can incorporate the professional player's
+historical performance into the model that tries to predict the winner
+of LoL matches. If we just focus on the game statistics itself, we found
+out that the playing habits are also very different for the professional
+competitions and normal rank games. Lastly, no matter in rank or E-sport
+competition, players can create many impossibilities in the world of the
+League of Legends, which are always unpredictable for building the
+model. This might be especially obvious as we build the model by only
+the first ten minutes of data. Overall, our model built on this rank
+data set to provide a rough example of how can we use game statistics to
+predict the winner of the game, which could be further refined to a more
+accurate model.
